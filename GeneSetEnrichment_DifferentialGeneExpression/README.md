@@ -6,10 +6,15 @@ the raw counts (in variable “counts”) and gene lengths (length of CDS, in va
 arabidopsis data used in the RNA-seq lab.
 Write an R function to compute the TPM expression level of each gene, and use it to compute the
 TPM for all genes and for each RNA sample.
+
+
+
 Q2. You will perform a differential gene expression analysis, comparing mouse brain
 (hippocampus) cells treated by potassium chloride (KS) as a control and norepinephrine (NS) as
 experimental perturbation (4 biological replicates in each group). It uses paired end data: 101 bp x
 2.
+
+
 The original data comes from the paper Zhang Z.H. et al. "A Comparative Study of Techniques for
 Differential Expression Analysis on RNA-Seq Data". Plos One, Aug 2014. http://dx.doi.org/
 10.1371/journal.pone.0103207
@@ -19,6 +24,8 @@ the file "HW2_mouse_brain_RNAseq_genelevel_counts.RData". The variable “counts
 read counts.
 The experimental design- a simple two independent sample design- is described in the tab-delimited
 text file "hw2_exp_design.tsv".
+
+
 Perform the following steps of an RNA-seq analysis:
 (1) Perform a differential gene expression analysis. Save an xls file "diff_gene_NETID.xls" with a
 list of differentially expressed genes with FDR <= 0.10.
