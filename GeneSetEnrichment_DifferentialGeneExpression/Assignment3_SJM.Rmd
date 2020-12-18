@@ -1,0 +1,317 @@
+---
+title: "Assignment3_AppliedGenomics"
+author: "shaistamadad"
+date: "3/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+load(file="RNAseq_arabidopsis_genelevel_counts_length.RData")
+```
+
+```{r}
+colnames(counts)
+dim(counts)
+genelevel_counts <- counts
+```
+```{r}
+ gene_len <- glength
+dim(gene_len)
+colnames(gene_len)
+```
+
+```{r}
+tpm <- function(reads_count,gene_length)
+{
+  reads_per_kilobase <- sweep(reads_count,MARGIN=1,gene_length,`/`)
+  #View(reads_per_kilobase)
+  scaling_factor <- colSums(reads_per_kilobase)/(10^6)
+  
+  #View(scaling_factor)
+  return(sweep(reads_per_kilobase,2,scaling_factor,`/`))
+}
+```
+
+
+```{r}
+
+
+TPM<- tpm(counts, glength[,2])
+dim(TPM)
+View(TPM)
+```
+
+
+
+
+```{r}
+head(TPM)
+```
+
+
+## Install needed packages the first time only
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("limma")  # the main package we will use
+#BiocManager::install("edgeR")  # for TMM normalization
+#install.packages("dplyr")      # miscellaneous useful functions
+#install.packages("WriteXLS")   # (optional) save results as Excel file
+# (Note: under Windows will also need to install Perl)
+#install.packages("Perl")
+```
+
+## Load libraries
+```{r}
+library("dplyr")  # for arrange() function
+library(limma)    # main limma package
+library(edgeR)    # we need the TMM function from edgeR
+library(WriteXLS)# for convenience, we will save the final results as an Excel file
+#library(Perl)
+```
+
+
+
+
+
+
+
+
+```{r}
+load(file="HW2_mouse_brain_RNAseq_genelevel_counts.RData")
+```
+
+
+
+
+
+Convert counts from standard R list to Bioconductor DGEList data structure
+```{r}
+dge <- DGEList(counts)
+```
+
+```{r}
+dge$samples
+```
+
+```{r}
+dim(dge)
+```
+
+
+
+
+```{r}
+#(requires > 1 CPM over at least 3 samples)
+#isexpr <- rowSums(cpm(dge) > 1) >=3 # require a minimum counts per million
+isexpr <- rowSums(dge$counts > 30) >=3 # or we can specify a minimum count
+# Check what fraction of genes remain
+sum(isexpr)/nrow(dge)
+# Remove low expressed genes.
+dge <- dge[isexpr,,keep.lib.sizes=FALSE] # keep.lib.sizes=FALSE to force recalculating library sizes from sums of column counts (note: we can also pass in library sizes explicitly)
+
+dim(dge)
+```
+
+
+
+
+## TMM normalization
+```{r}
+dge <- calcNormFactors(dge, method="TMM")
+```
+
+
+```{r}
+ss <- read.delim("hw2_exp_design.tsv")
+ss   # labels of RNA samples (this needs to have the predictors corresponding to each bam filename)
+```
+
+
+```{r}
+ss$stressor<- relevel(ss$stressor, "KS")
+str(ss)
+```
+
+
+```{r}
+design <- model.matrix(~stressor, data=ss) 
+design
+```
+
+
+
+```{r}
+v <- voom(dge,design,plot=TRUE)
+```
+
+
+
+```{r}
+fit <- lmFit(v,design)
+fit
+```
+
+```{r}
+fit2  <- eBayes(fit)
+colnames(fit2)
+```
+
+```{r}
+NS_K = topTable(fit2, coef="stressorNS", number=nrow(dge$counts))
+```
+
+
+
+```{r}
+dim(NS_K[NS_K$adj.P.Val <= 0.1,])
+head(NS_K)
+```
+
+
+## As a diagnostic, it is useful to plot the distribution of raw p-values, to check whether there is a useful signal. 
+We can see here that there is a useful signal as the frequency of low p-va;ues is high in experiental group. 
+```{r}
+hist(fit2$p.value[,"stressorNS"])
+```
+
+```{r}
+cont.matrix <- cbind(stressorNS=c(0,1))
+
+fit3 <- contrasts.fit(fit, cont.matrix)	# like contrasts() in base R
+
+colnames(fit3)
+```
+
+
+```{r}
+fit3  <- eBayes(fit3)
+```
+
+
+
+```{r}
+hist(fit3$p.value[,"stressorNS"])
+```
+
+
+
+
+
+
+
+
+
+```{r}
+stressorNS= topTable(fit3, coef="stressorNS", number=nrow(dge$counts),adjust.method="BH")
+```
+
+
+
+
+
+
+
+
+```{r}
+# make list of data.frames to write to xls file
+sigGenes = list()
+sigGenes[["stressorNS"]] = stressorNS
+
+sigGenes_fdr1 = lapply(sigGenes, function(x) x[x[,"adj.P.Val"]<=0.1,])  # limit to FDR of 0.05
+
+# print number of significant genes
+lapply( sigGenes_fdr1, nrow)
+
+# write out results in Excel format
+WriteXLS("sigGenes_fdr1",ExcelFileName=paste("diff_gene_sm8847.xls",  sep=""),row.names=T, FreezeRow=1,FreezeCol=1,AdjWidth=F)
+```
+
+```{r}
+#install.packages("pheatmap")
+library(pheatmap)
+```
+
+```{r}
+
+# MA plot
+plotMD(fit3, main="plotMD(fit3)", cex=0.5, coef="stressorNS")  # MA plot 
+```
+
+```{r}
+str(stressorNS)
+```
+
+
+
+
+
+
+```{r fig1, fig.height = 40, fig.width = 10}
+# heatmap
+df =stressorNS  
+df = df %>% mutate(gene_id = rownames(df)) %>% filter(adj.P.Val <= 0.005 & (logFC >= log2(4.0) | logFC <= log2(1/4.0)) )   # restrict to genes with FDR 0.5% and FC more than 4.0
+dexpr = v$E  # get log expression data from voom function output
+#dexpr = dexpr[,c('stressorNS')] # select relevant columns
+dexpr = dexpr[rownames(dexpr) %in% as.character(df$gene_id), ]
+heatmap123= pheatmap(as.matrix(dexpr),  cluster_rows=TRUE, cluster_cols=TRUE, main="FDR < 0.5% & >4-fold", 
+			scale = "row",
+			gaps_col = gaps_col, 
+			clustering_distance_cols = "correlation", 
+#			cutree_cols = 2, 
+#			treeheight_col = 20,
+			border_color = FALSE, legend = TRUE, legend_labels = "up-/down- regulated",height=20, color=colorRampPalette(c("darkgreen", "black", "red"))(500)) 
+```
+
+
+
+
+```{r}
+load(file="Mm.c5.symbol.rdata")
+```
+
+
+```{r}
+C2t <- ids2indices(Mm.c5.symbol, rownames(v))
+```
+
+
+
+
+# Do romer GSEA on each contrast of interest
+```{r}
+rr_resUP = list()
+
+for (jj in colnames(cont.matrix)) {
+  cat(jj, "\n")
+  # call romer for GSEA. v stores our count data (with weights); C2t stores the gene set information; design stores the experimental design; contrast stores our particular contrasts of interest
+  rr <- romer(v,C2t,design=design,contrast=cont.matrix[,jj],nrot=1000)      # ideally, should do >= 1000 rotations
+  romerUP_rr=topRomer(rr,n=20,alt="up")
+  romerUP_rr= data.frame( romerUP_rr)
+  rr_resUP[[jj]] = romerUP_rr
+}
+
+WriteXLS("rr_resUP",ExcelFileName=paste("GSEA_up_sm8847.xls",  sep=""),row.names=T, FreezeRow=1,FreezeCol=1,AdjWidth=F)	
+```
+The most significant GO Geneset in my list is GO_ACID_SECRETION. These genes are involved in regulated release of gastric acid (hydrochloric acid) by parietal or oxyntic cells during digestion. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

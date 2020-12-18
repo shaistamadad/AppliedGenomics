@@ -1,0 +1,352 @@
+---
+title: "RNA-seq limma example"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+In particular, list and number at the start of your document the major statistical issues for HTS we
+covered in lectures, and for each relevant line or section of the pipeline describe which statistical
+issue is involved, referencing this list. (The issues are: (1) Poisson count noise, (2) Moderated t-test
+(3) Normalisation (4) Multiple testing correction).
+Then describe each statistical issue in a paragraph in your own words. You should refer to the
+relevant subsections of Conesa et al "A survey of best practices for RNA-seq data analysis" and
+Ritchie et al "limma powers differential expression analyses for RNA-sequencing and microarray
+studies" in your answer.
+
+
+The major statistical issues for HTS are: 
+(1) Poisson count noise,
+(2) Moderated t-test
+(3) Normalisation 
+(4) Multiple testing correction).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install needed packages the first time only
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("limma")  # the main package we will use for differential gene analysis. The input for Limma are the number of counts over each gene and  a contrast matrix describing the experimental design
+#BiocManager::install("edgeR")  # for TMM normalization
+#install.packages("dplyr")      # miscellaneous useful functions
+#install.packages("WriteXLS")   # (optional) save results as Excel file
+# (Note: under Windows will also need to install Perl)
+#install.packages("pheatmap")  # need this package to create a heatmap 
+```
+
+## Load libraries
+```{r}
+library("dplyr")  # for arrange() function
+library(limma)    # main limma package for differential gene analysis.
+library(edgeR)    # we need the TMM function from edgeR to address the issue of normalisation across samples 
+library(WriteXLS) # for convenience, we will save the final results as an Excel file
+library(pheatmap) # for heatmap plot
+```
+
+
+RNA-seq analysis consists of acquisition of RNA-seq data: library is constructed and  sequenced to generate fastqc files which contain sequencing information. These files are then processed (e.g., trimmed to remove the adaptor sequences) and compressed into bam files. Bam files contian information about counts over genes for the different experimental conditions condition. These bam files are then analysed to get number of counts across a gene for the different conditions to estimate gene and transcript expression. The simplest approach to quantification is to aggregate raw counts of mapped reads using programs such as featureCounts as used in this example. 
+
+## Load raw data
+This is the RNA-seq counts per gene. This was calculated using featureCounts. Also load sample information (stored in data.frame "ss")
+
+```{r}
+load(file="RNAseq_arabidopsis_genelevel_counts.RData")
+```
+
+Look at the raw count data saved from featureCounts
+```{r}
+colnames(counts)
+dim(counts)
+genelevel_counts <- counts
+```
+
+```{r}
+str(genelevel_counts)
+```
+
+
+Convert counts from standard R list to Bioconductor DGEList data structure. 
+limma accepts RNA-seq data in the form of a matrix of read counts, with rows for genomic features and columns
+for RNA samples. Alternatively it can accept a DGEList object from the edgeR package. That's why the data is converted into a DGElist called dge. Next, a contrast matrix containing information about the experimental design will be used. Limma will then fit the data using a linear model to give gene expression data. 
+
+```{r}
+dge <- DGEList(counts=genelevel_counts)   # genelevel_counts was initially a list of two lists: the gene names and the experimental and control group names 
+```
+
+
+```{r}
+str(dge$samples)
+```
+
+
+```{r}
+dim(dge)
+```
+
+
+dge has 27052 rows and 12 columns 
+
+
+
+
+
+## Non-specific filter to remove low count features
+The non-specific filtering helps to get rid of genes that are expressed at very low (non-significant levels) both in the control and experimental groups. Removing these genes leads to better performance in later steps of the RNA-seq pipeline. These steps include FDR estimation. The threshold set for the filtering of genes should be such that around 20-30 percent of the genes are filtered out. A higher proportion than this range can lead to missing out of genes which are actually significantly differentially expressed. 
+```{r}
+# There are two approaches to do non-specific filtering 
+# 1) The first approach is to set the requirement that across all samples, atleast n samples should have expression level greater than X. n is the size of the smallest sub-group, and X  is a threshold. E.g., 1 count per million mapped (CPM). so an example would be requirement of > 1 CPM over at least n=3 samples). If we use the first approach: the following coode is run:  isexpr <- rowSums(cpm(dge) > 1) >=3  # require a minimum counts per million
+
+#2) The second approach is to set a threshold for the mean counts across all samples. E.g.,: 
+isexpr <- rowSums(dge$counts > 30) >=3  # or we can specify a minimum count
+View(isexpr)
+nrow(dge)
+
+# Check what fraction of genes remain: In this case, around 64 percent remain. 
+sum(isexpr)/nrow(dge)   #17494 is the number of gene entries 
+
+# Remove low expressed genes.
+dge <- dge[isexpr,,keep.lib.sizes=FALSE] # keep.lib.sizes=FALSE to force recalculating library sizes from sums of column counts (note: we can also pass in library sizes explicitly)
+
+dim(dge)
+```
+
+## TMM normalization
+```{r}
+dge <- calcNormFactors(dge, method="TMM") # The TMM normalisation to address the issue of normalisation between replicates 
+```
+
+##Issue: Normalisation
+Before meaningful comparisons can be made between treatment conditions in a designed experiment, it is critical that the expression values are normalized so that all the samples are as far as possible on the same measurement scale. The purpose of normalization is to remove systematic effects due to technical differences between the assays unassociated with the biological differences of interest (Ritchie et al. 2015).There is a problem unique to HTS, which is the "real estate effect": if a small number of genes are very highly expressed then, as there are a fixed number of reads per lane, the other genes will necessarily be biased downwards.To correct for this, a robust statistic impervious to such outliers (a trimmed mean) is used to normalize samples, known as TMM (Trimmed mean of M-values)
+
+
+## Calculate design matrix 
+# The design matrix is important for carrying out differential gene analysis using the limma package. 
+(this also works with base R) 
+(using default treatment contrasts for this example)
+
+Note: no need to specify the response variable here, so we leave it out.
+
+Note: I use the column "genotype" to indicate mt knockout (of the methytransferase gene trm4b) vs WT (wildtype), and "stressor" to indicate oxidative stress or no stress (caused by the oxidizer paraquat).
+
+```{r}
+ss <- read.delim("experiment_info.tsv")
+ss   # labels of RNA samples (this needs to have the predictors corresponding to each bam filename)
+
+# ensure coding of factor levels is what we want (otherwise R will use alphabetical ordering of factor levels)
+ss$genotype <- relevel(ss$genotype, "WT")
+ss$stressor <- relevel(ss$stressor, "ctrl_Root")
+str(ss)  # check dataframe structure
+
+design <- model.matrix(~stressor*genotype, data=ss)  # get design matrix corresponding to a factorial model formula
+```
+
+Note: this design matrix uses the default R "treatment contrasts" so the columns 1 to 4 represent:
+1. "(Intercept)" is mean WT unstressed
+2. "stressorstress_Root" is WT stressed - WT unstressed
+3. "genotypemt" is MT knockout unstressed - WT unstressed
+4. "stressorstress_Root:genotypemt" is interaction term  which is 
+"difference of differences" i.e. (MT ko stressed - MT ko unstressed) - (WT stressed - WT unstressed)
+
+See Limma User Guide section 9.5.4 for more details on using and interpreting model formulae and design matrices.
+
+Note that the contrast "MT knockout stressed versus unstressed" that we might want is *not* available using the default treatment contrasts. See below for how to define a contrasts matrix to get other contrasts of interest.
+
+## Calculate weights to correct for Poisson count noise due to discrete nature of RNA-seq. 
+This is done by empirically fitting a curve to (and also log converts).
+This allows us to use a weighted linear model rather than requiring a more complex generalized linear model of a negative binomial distribution. 
+
+##Issue: Poisson count noise: 
+Differential expression of genes in RNA-seq is computed using discrete probability distribution models such as poisson and negative binomial.  The negative binomial distribution (also known as the gamma-Poisson distribution) is a generalization of the Poisson distribution and this distribution model introduces an additional variance (error) called over-dispersion on top of the variance expected due to random sampling in RNA-seq.  TMM normalisation and batch removal can hlep to minimise the discrete nature of data and to make the data behave more like a  continuous distribution. This is important as we use generalised linear models for differential gene expression which assume a continuous distribution of data. 
+
+There are two ways to address the over-dispersion poisson noise issue: 
+1) model the noise by a negative binomial distribution and use a generalised linear model (e.g. EdgeR, DeSeq2)
+2)handle the noise by weights (0 to 1) and use a weighted linear model (Limma)
+
+An advantage of limma ober the negative binomial distrbution is that limma is very flexible- general linear
+model; the weights are useful for other processing e.g. clustering; and can be applied to unique non-lognormal assays (e.g. RNA methylation)
+
+
+```{r}
+v <- voom(dge,design,plot=TRUE) # Note: optionally, we can pass library sizes explicity here
+```
+
+What is voom doing?
+
+Counts are transformed to log2 counts per million reads (CPM), where “per million reads” is defined based on the normalization factors we calculated earlier
+A linear model is fitted to the log2 CPM for each gene, and the residuals are calculated
+A smoothed curve is fitted to the sqrt(residual standard deviation) by average expression (see red line in plot above)
+The smoothed curve is used to obtain weights for each gene and sample that are passed into limma along with the log2 CPMs.
+
+
+
+## Fit linear models across all genes using lmFit 
+(like lm() in base R)
+```{r}
+fit <- lmFit(v,design)   # addresses the issue of technical poisson count noise. here we are using the generalised linear model from the limma package. 
+```
+
+## eBayes computes F (overall "omnibus" p-values) and (moderated) t-statistics for all genes
+(like anova() in base R)
+
+## Issue: Moderated T-test to decrease the variance 
+● Limma uses the many 1000s of simultaneous tests to improve its estimates of variance in the linear models.
+● As well as the variance across replicates per gene, it also calculates a pooled estimate of variance across all genes. It can be shown that “shrinking” the variance estimate towards this global estimate, in a mathematically precise
+way. This can improve power when there are few replicates.
+● This is also known as an empirical Bayes approach or shrinkage estimate: Limma uses a moderated t-test instead
+of an ordinary t-test.
+```{r}
+fit2  <- eBayes(fit)   # eBayes approach reduces the variance estimate across samples 
+colnames(fit2)
+```
+## Do FDR multiple testing correction and extract list of most significant genes (using Benjamini-Hockberg by default)
+## Addresses the issue of multiple testing 
+General problem of multiple hypothesis testing: if we
+perform multiple (m) simultaneous tests of hypotheses then although each can be controlled individually to have a
+small risk of type I (false positive) error, we can have a large overall type I error. 
+For critical experiments testing several hypotheses, we typically want to bound the type I or “false positive” error rate on the whole family of tests. So we use the family wise error rate control methods such as Bonferroni/Holm correction. However, these are conservative methofs which are sutiable when carrying out critical experiments. If we are doing exploratory studies, False Discovery Rate (FDR) method is more appropriate. HTS studies are often hypothesis generation or exploratory studies, where we want to generate top candidates with a defined error rate, for later experimental confirmation, unlike the case of FWER where we have some critical experiments that are evidence for a hypothesis. It is an exploratory, not confirmatory study. Two main mwthods for adjusting p-values in FDR are Benjamini-Hockberg (BH) and storey method. 
+```{r}
+R_interaction = topTable(fit2, coef="stressorstress_Root:genotypemt", number=nrow(dge$counts)) 
+R_stress_vs_ctrl_in_WT = topTable(fit2, coef="stressorstress_Root", number=nrow(dge$counts))
+R_mt_vs_WT_in_ctrl = topTable(fit2, coef="genotypemt", number=nrow(dge$counts))
+```
+## How many significant genes showing interaction are there at FDR of 5% ?
+```{r}
+dim(R_interaction[R_interaction$adj.P.Val <= 0.05,])
+head(R_interaction)
+```
+
+## Set a contrast matrix that specifies directly the contrasts we are interested in.
+The above analysis used the default "treatment contrasts" of R as specied by the design matrix. However, that does not give us the oxidative stress vs unstressed in MT knockout contrast which we may be interested in, but we can get that using custom contrasts (see chapter 9 in the Limma User Guide for more details)
+
+```{r}
+cont.matrix <- cbind(stress_vs_ctrl_in_WT=c(0,1,0,0),stress_vs_ctrl_in_mt=c(0,1,0,1),interaction=c(0,0,0,1))
+
+fit3 <- contrasts.fit(fit, cont.matrix)	# like contrasts() in base R
+
+colnames(fit3)
+```
+
+## Compute F and (moderated) t-statistics for all genes
+```{r}
+fit3  <- eBayes(fit3)
+```
+
+## As a diagnostic, it is useful to plot the distribution of raw p-values, to check whether there is a useful signal
+```{r}
+hist(fit3$p.value[,"stress_vs_ctrl_in_WT"]) # as an example, plot p-value distribution for one comparison
+```
+
+## Get top ranked genes
+```{r}
+R_interaction2 = topTable(fit3, coef="interaction", number=nrow(dge$counts),adjust.method="BH")
+R_stress_ctrl_WT = topTable(fit3, coef="stress_vs_ctrl_in_WT", number=nrow(dge$counts),adjust.method="BH")
+R_stress_ctrl_mt = topTable(fit3, coef="stress_vs_ctrl_in_mt", number=nrow(dge$counts),adjust.method="BH")
+```
+
+## Optionally, save results in Excel format.
+```{r}
+# make list of data.frames to write to xls file
+sigGenes = list()
+sigGenes[["R_interaction2"]] = R_interaction2
+sigGenes[["R_stress_ctrl_WT"]] =R_mt_vs_WT_in_ctrl
+sigGenes[["R_stress_ctrl_mt"]] =R_stress_ctrl_mt
+
+sigGenes_fdr05 = lapply(sigGenes, function(x) x[x[,"adj.P.Val"]<=0.05,])  # limit to FDR of 0.05
+
+# print number of significant genes
+lapply( sigGenes_fdr05, nrow)
+
+# write out results in Excel format
+WriteXLS("sigGenes_fdr05",ExcelFileName=paste("expression_genelevel_limma_example.xls",  sep=""),row.names=T, FreezeRow=1,FreezeCol=1,AdjWidth=F)	
+```
+
+## Generate common plots for exploratory data analysis
+```{r}
+# volcano plot
+volcanoplot(fit3, coef="stress_vs_ctrl_in_WT") #Volcano plot shows fold changes and posterior odds of DE for a particular
+#comparison 
+
+# MA plot
+#An MA plot (aka Bland–Altman or MD plot) visualizes the results of a differential gene expression analysis. It shows the differences between measurements taken in two samples, by transforming the data onto M (log ratio) and A (mean average) scales, then plotting these values.
+plotMD(fit3, main="plotMD(fit3)", cex=0.5, coef="stress_vs_ctrl_in_WT")  # MA plot 
+
+# multidimensional scaling
+plotMDS(v, main="plotMDS(v)",cex=0.5,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3)))
+#biological replicates of the same condition will cluster together in a principal component analysis (PCA)
+#The plotMDS function uses multi-dimensional scaling to plot differences in expression profiles between different samples
+
+# density plots
+plotDensities(v, main="plotDensities(v)",legend=F)
+```
+
+```{r fig1, fig.height = 14, fig.width = 5}
+# heatmap
+df = R_stress_ctrl_WT  # For this example, we select genes based only this constrast here (oxidative stress vs control in wild type)
+df = df %>% mutate(gene_id = rownames(df)) %>% filter(adj.P.Val <= 0.005 & (logFC >= log2(4.0) | logFC <= log2(1/4.0)) )   # restrict to genes with FDR 0.5% and FC more than 4.0
+dexpr = v$E  # get log expression data from voom function output
+#dexpr = dexpr[,c('Col_paral_Root_1','Col_para_Root_2','Col_para_Root_3','Col_ctrl_Root_1','Col_ctrl_Root_2','Col_ctrl_Root_3')] # select relevant columns
+dexpr = dexpr[rownames(dexpr) %in% as.character(df$gene_id), ]
+pheatmap(as.matrix(dexpr),  cluster_rows=TRUE, cluster_cols=TRUE, main="FDR < 0.5% & >4-fold", 
+			scale = "row",
+			gaps_col = gaps_col, 
+			clustering_distance_cols = "correlation", 
+#			cutree_cols = 2, 
+#			treeheight_col = 20,
+			border_color = FALSE, legend = TRUE, legend_labels = "up-/down- regulated",height=20, color=colorRampPalette(c("darkgreen", "black", "red"))(500)) 
+```
+
+## Do gene set enrichment analysis (GSEA)  
+
+The differential gene expression can then be used to characterise molecular functions of the differentially expressed genes. GSEA looks at gene expression patterns at gene set levels rather than looking at indivial gene expression patterns. This will help find sets of genes which, as a group, show significantly different expression profiles between the experimental and the control groups. These differences may be missed if the analysis is done only at an individual gene level. Gene sets involved in key molecular pathways are characterised and available on many platforms (one example is below). In GSEA,  
+
+Load arabidopsis geneset info
+(plant geneset from http://structuralbiology.cau.edu.cn/PlantGSEA/download.php)
+```{r}
+load(file="Ara_genesets2.RData")
+```
+
+Loads arasets, which defines the genesets.
+Also loads dset_desc (used later), which describes the genesets.
+
+## We need to convert from gene symbols to the index of the gene in the data to call romer() (see documentation)
+```{r}
+C2t <- ids2indices(arasets, rownames(v))
+```
+
+# Do romer GSEA on each contrast of interest
+```{r}
+rr_resUP = list()
+rr_resDN = list()
+rr_resMIXED = list()
+
+for (jj in colnames(cont.matrix)) {
+  cat(jj, "\n")
+  # call romer for GSEA. v stores our count data (with weights); C2t stores the gene set information; design stores the experimental design; contrast stores our particular contrasts of interest
+  rr <- romer(v,C2t,design=design,contrast=cont.matrix[,jj],nrot=1000)      # ideally, should do >= 1000 rotations
+  romerUP_rr=topRomer(rr,n=20,alt="up")
+  romerDN_rr=topRomer(rr,alt="down")
+  romerMIXED_rr=topRomer(rr,alt="mixed")
+  
+  # This R code simply includes the geneset descriptions in the output (note: arrange() orders by the column "Up")
+  romerUP_rr  = arrange(merge(data.frame(romerUP_rr), dset_desc, by.x="row.names", by.y="V1",all.x=T), Up)
+  romerDN_rr  = arrange(merge(data.frame(romerDN_rr), dset_desc, by.x="row.names", by.y="V1",all.x=T), Down)
+  romerMIXED_rr  = arrange(merge(data.frame(romerMIXED_rr), dset_desc, by.x="row.names", by.y="V1",all.x=T), Mixed)
+  
+  rr_resUP[[jj]] = romerUP_rr
+  rr_resDN[[jj]] = romerDN_rr
+  rr_resMIXED[[jj]] = romerMIXED_rr
+}
+res_dir = "./" 
+RData_dir = "./"
+WriteXLS("rr_resMIXED",Encoding="latin1",ExcelFileName=paste(res_dir,"romer_rrMIXED_res.xls",sep=""),row.names=F, FreezeRow=1,FreezeCol=1,AdjWidth=F)	
+WriteXLS("rr_resUP",Encoding="latin1",ExcelFileName=paste(res_dir,"romer_rrUP_res.xls",  sep=""),row.names=F, FreezeRow=1,FreezeCol=1,AdjWidth=F)	
+WriteXLS("rr_resDN",Encoding="latin1", ExcelFileName=paste(res_dir,"romer_rrDN_res.xls",  sep=""),row.names=F, FreezeRow=1,FreezeCol=1,AdjWidth=F)	
+
+save(rr_resMIXED,rr_resUP,rr_resDN, file= paste(RData_dir,"romer_rr_res.RData",  sep=""))
+```
+
+## end of main example
+

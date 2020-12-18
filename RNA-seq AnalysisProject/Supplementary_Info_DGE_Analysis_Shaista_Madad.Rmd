@@ -1,0 +1,755 @@
+---
+title: "Differential Gene Expression Analysis"
+author: "shaistamadad"
+date: "5/2/2020"
+output: html_document
+---
+
+```{r}
+#install.packages("statmod")
+```
+
+
+
+## Load libraries
+```{r}
+library("dplyr")  # for arrange() function
+library(limma)    # main limma package
+library(edgeR)    # we need the TMM function from edgeR
+library(WriteXLS) # for convenience, we will save the final results as an Excel file
+library(pheatmap) # for heatmap plot
+library(statmod)
+```
+
+## Load raw data
+This is the RNA-seq counts per gene. This was calculated using featureCounts
+
+#DGE with the Weight Gain Group only divided into 2 groups based on sample IDs/ clustering 
+
+```{r}
+load(file="WeightGainTotalCountsNCBI.RData")
+WeightGainCounts= read_counts_data
+#head(WeightGainCounts)
+```
+
+
+
+
+
+Convert counts from standard R list to Bioconductor DGEList data structure
+```{r}
+dge_unfiltered <- DGEList(counts=WeightGainCounts)
+```
+
+```{r}
+Counts=dge_unfiltered$counts
+```
+
+
+
+## Non-specific filter to remove low count features
+```{r}
+# (requires > 1 CPM over at least 3 samples)
+#isexpr <- rowSums(cpm(dge) > 1) >=3  # require a minimum counts per million
+isexpr <- rowSums(dge_unfiltered$counts > 1) >=3  # or we can specify a minimum count
+
+# Check what fraction of genes remain
+sum(isexpr)/nrow(dge_unfiltered)
+
+# Remove low expressed genes.
+dge_filtered <- dge_unfiltered[isexpr,,keep.lib.sizes=FALSE] # keep.lib.sizes=FALSE to force recalculating library sizes from sums of column counts (note: we can also pass in library sizes explicitly)
+
+dim(dge_filtered)
+```
+
+
+
+
+
+
+
+
+
+
+## TMM normalization
+```{r}
+dge_normalised <- calcNormFactors(dge_filtered, method="TMM")
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+save(dge_normalised, file= "Dataset_WG.csv")
+```
+
+
+
+```{r}
+# (requires > 1 CPM over at least 3 samples)
+#isexpr <- rowSums(cpm(dge) > 1) >=3  # require a minimum counts per million
+isexpr_gs <- rowSums(WeightGainCounts> 1) >=3  # or we can specify a minimum count
+
+# Check what fraction of genes remain
+sum(isexpr_gs)/nrow(WeightGainCounts)
+
+# Remove low expressed genes.
+dge_filtered_gs <- WeightGainCounts[isexpr_gs,] # keep.lib.sizes=FALSE to force recalculating library sizes from sums of column counts (note: we can also pass in library sizes explicitly)
+
+dim(dge_filtered_gs)
+```
+
+
+
+
+
+
+
+
+
+
+## Calculate design matrix 
+
+
+```{r}
+library(readr)
+Experiment_Design <- read_csv("Experiment_Design_WG.csv")
+Experiment_Design= as.data.frame(Experiment_Design)
+head(Experiment_Design)
+```
+
+
+
+
+
+
+```{r}
+Experiment_Design$stressor <- as.factor(Experiment_Design$stressor)
+#Experiment_Design$name<- as.factor(Experiment_Design$name)
+str(Experiment_Design)  # check dataframe structure
+Experiment_Design$stressor <- relevel(Experiment_Design$stressor, "WGB")
+
+design <- model.matrix(~stressor, data=Experiment_Design)  # get design matrix corresponding to a factorial model formula
+```
+
+
+
+
+
+
+
+```{r}
+v <- voom(dge_normalised,design,plot=TRUE) # Note: optionally, we can pass library sizes explicity here
+```
+
+
+```{r}
+v$design
+```
+
+
+
+
+
+
+
+## Fit linear models across all genes using lmFit 
+(like lm() in base R)
+```{r}
+fit <- lmFit(v,design)
+```
+
+
+
+## eBayes computes F (overall "omnibus" p-values) and (moderated) t-statistics for all genes
+(like anova() in base R)
+```{r}
+fit2  <- eBayes(fit, trend = TRUE, robust = TRUE)
+colnames(fit2)
+```
+
+
+
+```{r}
+plotMD(fit2, main="plotMD(fit2)", cex=0.5, coef="stressorWGA")
+```
+
+
+
+## As a diagnostic, it is useful to plot the distribution of raw p-values, to check whether there is a useful signal
+```{r}
+hist(fit2$p.value[,"stressorWGA"]) # as an example, plot p-value distribution for one comparison
+```
+
+
+
+```{r}
+volcanoplot(fit2, coef="stressorWGA")
+```
+
+
+
+```{r}
+plotDensities(v, main="plotDensities(v)",legend=F)
+```
+
+
+
+```{r}
+plotMDS(v, main="plotMDS(Weight Gain Only)",cex=1,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3), rep("purple",3), rep("orange",3)))
+```
+
+## Do FDR multiple testing correction and extract list of most significant genes (using Benjamini-Hockberg by default)
+```{r}
+R_stressor = topTable(fit2, coef="stressorWGA", number=nrow(dge_normalised$counts))
+```
+
+
+
+## How many significant genes showing interaction are there at FDR of 5% ?
+```{r}
+WG_FDR=R_stressor[R_stressor$adj.P.Val<= .05,]
+dim(R_stressor[R_stressor$adj.P.Val<= .05,])
+```
+
+```{r}
+write.csv(WG_FDR, file= "DGE_WGonly.csv")
+```
+
+```{r}
+WG_FDR
+```
+
+
+
+
+
+
+# NoWeigtGain Group Only Differential Gene Analysis divided into two groups based on sample IDs
+
+```{r}
+load(file="NoWeightGainTotalCountsNCBI.RData")
+#head(WeightGainCounts)
+```
+
+
+
+
+```{r}
+NoweightGainCounts= read_counts_data_NWG
+```
+
+
+
+
+Convert counts from standard R list to Bioconductor DGEList data structure
+```{r}
+dge_unfiltered1 <- DGEList(counts=NoweightGainCounts)
+```
+
+
+
+
+## Non-specific filter to remove low count features
+```{r}
+# (requires > 1 CPM over at least 3 samples)
+#isexpr <- rowSums(cpm(dge) > 1) >=3  # require a minimum counts per million
+isexpr1 <- rowSums(dge_unfiltered1$counts > 1) >=3  # or we can specify a minimum count
+
+# Check what fraction of genes remain
+sum(isexpr1)/nrow(dge_unfiltered1)
+
+# Remove low expressed genes.
+dge_filtered1 <- dge_unfiltered1[isexpr1,,keep.lib.sizes=FALSE] # keep.lib.sizes=FALSE to force recalculating library sizes from sums of column counts (note: we can also pass in library sizes explicitly)
+
+dim(dge_filtered1)
+```
+
+
+
+
+
+## TMM normalization
+```{r}
+dge_normalised1 <- calcNormFactors(dge_filtered1, method="TMM")
+```
+
+
+```{r}
+dge_normalised1
+```
+
+
+## Calculate design matrix 
+
+
+```{r}
+library(readr)
+Experiment_Design1 <- read_csv("Experiment_Design_NWG2.csv")
+Experiment_Design1= as.data.frame(Experiment_Design1)
+head(Experiment_Design1)
+```
+
+
+
+
+
+
+
+
+```{r}
+Experiment_Design1$stressor <- as.factor(Experiment_Design1$stressor)
+#Experiment_Design$name<- as.factor(Experiment_Design$name)
+str(Experiment_Design1)  # check dataframe structure
+Experiment_Design1$stressor <- relevel(Experiment_Design1$stressor, "NWGB")
+
+design1 <- model.matrix(~stressor, data=Experiment_Design1)  # get design matrix corresponding to a factorial model formula
+head(design1)
+```
+
+
+
+
+
+
+
+```{r}
+v1 <- voom(dge_normalised1,design1,plot=TRUE) # Note: optionally, we can pass library sizes explicity here
+```
+
+
+
+
+
+```{r}
+v1$design
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Fit linear models across all genes using lmFit 
+(like lm() in base R)
+```{r}
+fit1 <- lmFit(v1,design1)
+```
+
+
+
+## eBayes computes F (overall "omnibus" p-values) and (moderated) t-statistics for all genes
+(like anova() in base R)
+```{r}
+fit2.1  <- eBayes(fit1)
+colnames(fit2.1)
+```
+
+## Do FDR multiple testing correction and extract list of most significant genes (using Benjamini-Hockberg by default)
+```{r}
+R_stressor1 = topTable(fit2.1, coef="stressorNWGA", number=nrow(dge_normalised1$counts))
+```
+
+
+
+```{r}
+plotMD(fit2.1, main="plotMD(fit2.1)", cex=0.5, coef="stressorNWGA")
+```
+
+
+## How many significant genes showing interaction are there at FDR of 5% ?
+```{r}
+FDR_NWG= R_stressor1[R_stressor1$adj.P.Val<= .05,]
+
+dim(R_stressor1[R_stressor1$adj.P.Val<= .05,])
+#head(R_stressor1)
+```
+
+```{r}
+write.csv(FDR_NWG, "NWG_Only.csv")
+```
+
+
+```{r}
+FDR_NWG
+```
+
+
+
+
+```{r}
+png(file="mygraphic3.png",width=1000,height=750)
+plotMDS(v1, main="(No Weight Gain Clusters)",cex=1,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3), rep("purple",3), rep("orange",3)))
+#dev.off()
+```
+
+
+
+
+
+```{r}
+NoweightGain= read_counts_data_NWG
+TotalCountsNCBI= cbind(WeightGainCounts,NoweightGain)
+save(TotalCountsNCBI, file = "TotalCountsNCBI.RData")
+```
+
+
+
+```{r}
+df= as.data.frame(TotalCountsNCBI)
+head(df)
+dim(df)
+```
+
+
+
+
+
+
+Convert counts from standard R list to Bioconductor DGEList data structure
+```{r}
+dge_total <- DGEList(counts=TotalCountsNCBI)
+```
+
+
+
+
+## Non-specific filter to remove low count features
+```{r}
+# (requires > 1 CPM over at least 3 samples)
+#isexpr <- rowSums(cpm(dge) > 1) >=3  # require a minimum counts per million
+isexprtotal <- rowSums(dge_total$counts > 5) >=3  # or we can specify a minimum count
+
+# Check what fraction of genes remain
+sum(isexprtotal)/nrow(dge_total)
+
+# Remove low expressed genes.
+dge_filtered_total <- dge_total[isexprtotal,,keep.lib.sizes=FALSE] # keep.lib.sizes=FALSE to force recalculating library sizes from sums of column counts (note: we can also pass in library sizes explicitly)
+
+dim(dge_filtered_total)
+```
+
+
+
+
+
+
+
+
+
+
+## TMM normalization
+```{r}
+dge_normalised_total <- calcNormFactors(dge_filtered_total, method="TMM")
+```
+
+
+## Calculate design matrix 
+
+
+
+
+```{r}
+library(readr)
+Experiment_Design_total <- read_csv("Experiment_Design_Final1.csv")
+Experiment_Design_total= as.data.frame(Experiment_Design_total)
+(Experiment_Design_total)
+```
+
+
+
+
+
+
+```{r}
+Experiment_Design_total$stressor <- as.factor(Experiment_Design_total$stressor)
+#Experiment_Design$name<- as.factor(Experiment_Design$name)
+str(Experiment_Design_total)  # check dataframe structure
+Experiment_Design_total$stressor <- relevel(Experiment_Design_total$stressor, "NWG")
+
+design_total <- model.matrix(~stressor, data=Experiment_Design_total)  # get design matrix corresponding to a factorial model formula
+```
+
+
+
+
+```{r}
+v.total <- voom(dge_normalised_total,design_total,plot=TRUE) # Note: optionally, we can pass library sizes explicity here
+```
+
+
+
+
+## Fit linear models across all genes using lmFit 
+(like lm() in base R)
+```{r}
+fit.total <- lmFit(v.total,design_total)
+```
+
+
+
+## eBayes computes F (overall "omnibus" p-values) and (moderated) t-statistics for all genes
+(like anova() in base R)
+```{r}
+fit2.total  <- eBayes(fit.total, trend = TRUE, robust = TRUE)
+colnames(fit2.total)
+```
+
+## Do FDR multiple testing correction and extract list of most significant genes (using Benjamini-Hockberg by default)
+```{r}
+R_stressor.total = topTable(fit2.total, coef="stressorWG", number=nrow(dge_normalised_total$counts))
+```
+
+
+
+## How many significant genes showing interaction are there at FDR of 5% ?
+```{r}
+FDR.Total=R_stressor.total[R_stressor.total$adj.P.Val<= .05,]
+dim(R_stressor.total[R_stressor.total$adj.P.Val<= .05,])
+#head(R_stressor)
+```
+
+```{r}
+write.csv(FDR.Total, file = "WG_NWG_Total.csv")
+```
+
+```{r}
+FDR.Total
+```
+
+
+
+## As a diagnostic, it is useful to plot the distribution of raw p-values, to check whether there is a useful signal
+```{r}
+hist(fit2.total$p.value[,"stressorWG"]) # as an example, plot p-value distribution for one comparison
+```
+
+
+
+
+
+```{r}
+volcanoplot(fit2.total, coef="stressorWG")
+```
+
+
+
+
+
+```{r}
+plotMD(fit2.total, main="plotMD(fit2)", cex=0.5, coef="stressorWG")
+```
+
+
+
+```{r}
+plotDensities(v.total, main="plotDensities(v.total)",legend=F)
+```
+
+
+
+
+
+```{r}
+plotMDS(v.total, main="plotMDS(Weight Gain Versus No Weight Gain)",cex=1,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3), rep("purple",3), rep("orange",3)))
+```
+
+
+
+
+
+
+
+
+
+
+
+#MDS Plots
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+png(file="mygraphic.png",width=1000,height=750)
+plotMDS(v, main="Weight Gain Two Clusters",cex=1,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3), rep("purple",3), rep("orange",3)), fontsz= 20)
+dev.off()
+```
+
+
+
+
+
+
+
+```{r}
+png(file="mygraphic2.png",width=1000,height=500)
+plotMDS(v.total, main="plotMDS(Weight Gain Versus No Weight Gain)",cex=1,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3), rep("purple",3), rep("orange",3)))
+dev.off()
+```
+
+
+
+
+
+
+```{r}
+plotMDS(v.total, main="plotMDS(v.total)",cex=1,col=c(rep("red",3),rep("green",3),rep("blue",3),rep("black",3), rep("purple",3), rep("orange",3)))
+```
+
+
+
+```{r}
+plotDensities(v, main="plotDensities(v)",legend=F)
+```
+
+
+
+
+
+
+## Had paired information been available, I would have used a design like this 
+
+
+```{r}
+library(readr)
+Experiment_Design_factorial<- read_csv("Experiment_Design_Factorial.csv")
+Experiment_Design_total= as.data.frame(Experiment_Design_factorial)
+(Experiment_Design_factorial)
+```
+
+
+
+
+
+
+```{r}
+Experiment_Design_factorial$stressor <- as.factor(Experiment_Design_factorial$stressor)
+Experiment_Design_factorial$Time = as.factor(Experiment_Design_factorial$Time)
+#Experiment_Design$name<- as.factor(Experiment_Design$name)
+#str(Experiment_Design_factorial)  # check dataframe structure
+Experiment_Design_factorial$stressor <- relevel(Experiment_Design_factorial$stressor, "NWG")
+Experiment_Design_factorial$Time= relevel(Experiment_Design_factorial$Time, "B")
+str(Experiment_Design_factorial)
+design_factorial <- model.matrix(~stressor+Time, data=Experiment_Design_factorial)  # get design matrix corresponding to a factorial model formula
+```
+
+
+
+
+```{r}
+v.factorial= voom(dge_normalised_total,design_factorial,plot=TRUE) # Note: optionally, we can pass library sizes explicity here
+```
+
+
+
+
+## Fit linear models across all genes using lmFit 
+(like lm() in base R)
+```{r}
+fit.factorial <- lmFit(v.factorial,design_factorial)
+```
+
+
+
+## eBayes computes F (overall "omnibus" p-values) and (moderated) t-statistics for all genes
+(like anova() in base R)
+```{r}
+fit2.factorial  <- eBayes(fit.factorial, trend = TRUE, robust = TRUE)
+colnames(fit2.factorial)
+```
+
+
+# Do FDR multiple testing correction and extract list of most significant genes (using Benjamini-Hockberg by default)
+```{r}
+#R_interaction = topTable(fit2.factorial, coef="stressorWG:TimeA", number=nrow(dge_normalised_total$counts)) 
+R_NWG_vs_WG_in_TimeB = topTable(fit2.factorial, coef="stressorWG", number=nrow(dge_normalised_total$counts))
+R_B_vs_A_in_NWG = topTable(fit2.factorial, coef="TimeA", number=nrow(dge_normalised_total$counts))
+```
+## How many significant genes showing interaction are there at FDR of 5% ?
+
+
+## How many significant genes showing interaction are there at FDR of 5% ?
+```{r}
+R2f= (R_NWG_vs_WG_in_TimeB [R_NWG_vs_WG_in_TimeB$adj.P.Val <= 0.05,])
+dim(R2f)
+```
+
+
+
+## How many significant genes showing interaction are there at FDR of 5% ?
+```{r}
+R3f=R_B_vs_A_in_NWG [R_B_vs_A_in_NWG$adj.P.Val<= .05,]
+
+dim(R3f)
+```
+
+
+```{r}
+length(TotalCountsNCBI[,1])
+```
+
+
+```{r}
+GSEA.NormalizeRows <-
+function(V) {
+  # Takes as input a matrix or dataframe with raw read counts. Each row represents reads for a single gene. Each column is reads from a single sample for all genes 
+#The function assumed that each row of count data represents reads for a single gene for all samples. The mean and standard deviation for each row was calculated. 
+ row.mean <- apply(V, MARGIN = 1, FUN = mean)  # mean for each row calculated. This is the mean counts for a given gene 
+ row.sd <- apply(V, MARGIN = 1, FUN = sd) # the standard deviation for the read count for each gene is calculated 
+ row.n <- length(V[, 1]) # this is the number of rows in the counts dataframe 
+ for (i in 1:row.n) {
+  if (row.sd[i] == 0) {   # if standard deviation is zero, then all read counts should be equated to zero 
+   V[i, ] <- 0
+  } else {  # is sd is not zeor, then for each read in a given row, substract the row mean from it and then divide the answer by the standard deviation of that row. 
+   V[i, ] <- (V[i, ] - row.mean[i])/row.sd[i]  # replaced the raw read count by this normalised score 
+  }
+ }
+ return(V)
+}
+```
+
+
+
+
+
+```{r}
+Normalised_Data= GSEA.NormalizeRows(TotalCountsNCBI)
+```
+
+
+
+```{r}
+write.csv(Normalised_Data, file= "Normalised_Data.csv")
+```
+
+
+
+
+
+
+
+
+
+
+

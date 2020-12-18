@@ -1,0 +1,1 @@
+This repo contains code for an RNA-seq analysis project and chip-seq analysis assignment. 

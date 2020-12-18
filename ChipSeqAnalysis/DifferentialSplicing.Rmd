@@ -1,0 +1,139 @@
+---
+title: "Assignment4_AppliedGenomics"
+author: "shaistamadad"
+date: "4/5/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+PART A, RNA-seq:
+You will use the same dataset from the previous assignment.
+You will perform an alternative splicing analysis, comparing mouse brain (hippocampus) cells treated by potassium chloride (KS) as a control and norepinephrine (NS) as experimental perturbation (4 biological replicates in each group). It uses paired end data: 101 bp x 2.
+It is a two independent sample experimental design.
+The data has been mapped and exon level counts have been computed for you and are available in the file "HW2_mouse_brain_RNAseq_exonlevel_counts.Rdata". For this exon dataset the variable “counts” has the counts and “gene_annotation” has gene annotation information.
+The experimental design- a simple two independent sample design- is described in the tab-delimited text file "hw2_exp_design.tsv".
+
+#Perform the following steps of an RNA-seq analysis:
+##(1) Do an exon-level differential splicing analysis using limma.
+##(2) Generate exon plots for the top 5 genes showing statistical evidence of alternative splicing. Save as "splicing_plots_NETID.pdf".
+
+```{r}
+library("dplyr")  # for arrange() function
+library(limma)    # main limma package
+library(edgeR)    # we need the TMM function from edgeR
+```
+
+
+```{r}
+load(file=paste("HW2_mouse_brain_RNAseq_exonlevel_counts.RData",sep=""))   #load the file 
+```
+
+
+```{r}
+exp_design<- read.delim("hw2_exp_design.tsv")  #will need this for the exon-level differentiation step using limma 
+```
+
+
+```{r}
+DGE <- DGEList(counts=counts, genes=gene_annotation)  # convert the exon countot into a DGE list format which is suitable to use with limma 
+```
+
+
+
+```{r}
+DGE <- calcNormFactors(DGE)   #TMM normalisation step 
+
+```
+
+
+
+
+```{r}
+# non-specific filter to remove low count features
+# (requires > 1 counts over at least 1 samples)
+#note that despite keeping the filter very low, only 36 percent of the counts remain 
+isexpr <- rowSums(DGE$counts > 1) >=1
+# check what fraction of exons remain
+sum(isexpr)/nrow(DGE)
+```
+
+
+
+
+
+
+```{r}
+DGE <- DGE[isexpr,,keep.lib.sizes=FALSE]  #only keep the counts in the DGE list which fit the filtering criteria above 
+dim(DGE)
+```
+
+
+
+
+
+```{r}
+design <- model.matrix(~stressor, data=exp_design)
+```
+
+In the design matrix, intercept is mean stressor KS and StressorNS is StressorNS- Stressor KS 
+
+
+
+# Calculate weights to correct for Poisson count noise due to discrete nature of RNA-seq. This is done by empirically fitting the curve.
+# This allows us to use a weighted linear model rather than requiring a  complex generalized linear model of a negative binomial distribution.
+
+
+```{r}
+v <- voom(DGE,design,plot=TRUE)
+```
+
+```{r}
+fit <- lmFit(v,design)  # lmFit fits linear model across all genes 
+```
+
+
+
+# Tests for differential exon usage for each gene and for each column of fit
+We will find differentially expressed exons, using the same approach as for differential gene expression
+
+
+```{r}
+fit3_splice <- diffSplice(fit, geneid="GeneID")
+```
+
+
+Rank genes by combining exon-level p-values into an overall measure of differential gene
+splicing activity (e.g. by an F-test, or combined pvalues using Simes or other methods).
+This approach is provided by the limma package.
+
+#Top table ranking the most differentially spliced genes or exons
+
+```{r}
+colnames(fit3_splice) # show the column names of comparisons
+FC_splice = topSplice(fit3_splice, coef="stressorNS", number=nrow(DGE$counts)) # ranks the genes showing splicing from lowed p value at the top, to the highest p value at the bottom 
+```
+
+```{r}
+head(FC_splice)
+```
+
+
+
+
+```{r}
+# Get the top 5 genes showing significance for alternatie splicing 
+pdf("splicing_plots_sm8847.pdf")   # save plots to pdf
+for (i in 1:5) {  # plot top 5 genes
+plotSplice(fit3_splice, coef="stressorNS", geneid=FC_splice$GeneID[i])
+}
+dev.off()
+
+```
+
+
+
+
+
